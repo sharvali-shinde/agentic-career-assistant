@@ -4,3 +4,9 @@ openai==2.26.0
 pypdf==6.7.5
 python-dotenv==1.2.2
 Requests==2.32.5
+pytest==8.3.4
+
+# RAG dependencies
+langchain-openai
+langchain-community
+faiss-cpu
