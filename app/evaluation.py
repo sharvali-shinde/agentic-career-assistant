@@ -1,8 +1,9 @@
-"""Reproducible evaluation for the saved career-profile semantic retriever.
+"""Reproducible evaluation for semantic and hybrid career-profile retrieval.
 
 Run from the repository root:
     python app/evaluation.py
     python app/evaluation.py --k 5
+    python app/evaluation.py --mode hybrid --k 8
 
 The CSV test cases contain manually curated relevant chunk IDs. Review those labels
 whenever the source documents or chunking strategy changes.
@@ -11,8 +12,6 @@ whenever the source documents or chunking strategy changes.
 from __future__ import annotations
 
 import argparse
-import csv
-import os
 import sys
 from pathlib import Path
 
@@ -45,6 +44,7 @@ def recall_at_k(
     retrieved_relevant = set(retrieved_ids[:k]) & relevant_ids
     return len(retrieved_relevant) / len(relevant_ids)
 
+
 def reciprocal_rank(retrieved_ids: list[str], relevant_ids: set[str]) -> float:
     """Reciprocal rank of the first relevant result; zero if none are relevant."""
     for rank, chunk_id in enumerate(retrieved_ids, start=1):
@@ -53,8 +53,8 @@ def reciprocal_rank(retrieved_ids: list[str], relevant_ids: set[str]) -> float:
     return 0.0
 
 
-def load_retriever(project_root: Path):
-    """Load .env and the already-built FAISS index; do not rebuild embeddings."""
+def load_retriever(project_root: Path, mode: str = "semantic"):
+    """Load the selected retriever and existing FAISS index without rebuilding it."""
     root_string = str(project_root)
     if root_string not in sys.path:
         sys.path.insert(0, root_string)
@@ -68,8 +68,6 @@ def load_retriever(project_root: Path):
 
     load_dotenv(project_root / ".env")
 
-    from app.vector_store import CareerRetriever
-
     index_path = project_root / "artifacts" / "career_vector_store"
     if not (index_path / "index.faiss").is_file():
         raise FileNotFoundError(
@@ -77,12 +75,26 @@ def load_retriever(project_root: Path):
             "Build it first with: python app/vector_store.py --rebuild"
         )
 
-    retriever = CareerRetriever(index_path=index_path)
-    retriever.load()
-    return retriever
+    if mode == "semantic":
+        from app.vector_store import CareerRetriever
+
+        retriever = CareerRetriever(index_path=index_path)
+        retriever.load()
+        return retriever
+
+    if mode == "hybrid":
+        from app.hybrid_retrieval import HybridCareerRetriever
+
+        return HybridCareerRetriever(index_path=index_path)
+
+    raise ValueError(f"Unsupported retrieval mode: {mode}")
 
 
-def evaluate(retriever, cases: pd.DataFrame, k: int = 4) -> tuple[pd.DataFrame, pd.DataFrame]:
+def evaluate(
+    retriever,
+    cases: pd.DataFrame,
+    k: int = 4,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run each test question and return per-question results and aggregate metrics."""
     if k < 1:
         raise ValueError("k must be at least 1.")
@@ -123,11 +135,18 @@ def evaluate(retriever, cases: pd.DataFrame, k: int = 4) -> tuple[pd.DataFrame, 
             {
                 "questions": len(results_df),
                 "k": k,
-                "hit_rate_at_k": results_df["hit_at_k"].mean() if len(results_df) else 0.0,
-                "mean_precision_at_k": results_df["precision_at_k"].mean() if len(results_df) else 0.0,
-                "mean_recall_at_k": results_df["recall_at_k"].mean() if len(results_df) else 0.0,
-                "mrr": results_df["reciprocal_rank"].mean() if len(results_df) else 0.0,
-
+                "hit_rate_at_k": (
+                    results_df["hit_at_k"].mean() if len(results_df) else 0.0
+                ),
+                "mean_precision_at_k": (
+                    results_df["precision_at_k"].mean() if len(results_df) else 0.0
+                ),
+                "mean_recall_at_k": (
+                    results_df["recall_at_k"].mean() if len(results_df) else 0.0
+                ),
+                "mrr": (
+                    results_df["reciprocal_rank"].mean() if len(results_df) else 0.0
+                ),
             }
         ]
     )
@@ -135,8 +154,21 @@ def evaluate(retriever, cases: pd.DataFrame, k: int = 4) -> tuple[pd.DataFrame, 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate career-profile semantic retrieval.")
-    parser.add_argument("--k", type=int, default=4, help="Number of chunks to retrieve per question.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate semantic or hybrid career-profile retrieval."
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=4,
+        help="Number of chunks to retrieve per question.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["semantic", "hybrid"],
+        default="semantic",
+        help="Retrieval method to evaluate (default: semantic).",
+    )
     parser.add_argument(
         "--cases",
         default="data/retrieval_eval_cases.csv",
@@ -157,25 +189,42 @@ def main() -> None:
     required_columns = {"case_id", "category", "question", "relevant_chunk_ids"}
     missing = required_columns - set(cases.columns)
     if missing:
-        raise ValueError(f"Evaluation CSV is missing columns: {', '.join(sorted(missing))}")
+        raise ValueError(
+            f"Evaluation CSV is missing columns: {', '.join(sorted(missing))}"
+        )
 
-    retriever = load_retriever(project_root)
+    retriever = load_retriever(project_root, mode=args.mode)
     results_df, summary_df = evaluate(retriever, cases, k=args.k)
 
     output_dir = project_root / "artifacts"
     output_dir.mkdir(parents=True, exist_ok=True)
-    results_path = output_dir / "retrieval_eval_results.csv"
-    summary_path = output_dir / "retrieval_eval_summary.csv"
+
+    # Keep semantic output names backward-compatible. Hybrid results get distinct
+    # filenames so running the comparison does not overwrite semantic results.
+    suffix = "_hybrid" if args.mode == "hybrid" else ""
+    results_path = output_dir / f"retrieval_eval{suffix}_results.csv"
+    summary_path = output_dir / f"retrieval_eval{suffix}_summary.csv"
     results_df.to_csv(results_path, index=False)
     summary_df.to_csv(summary_path, index=False)
 
-    print(f"Loaded saved index and evaluated {len(cases)} questions (top-k={args.k}).")
+    print(
+        f"Loaded {args.mode} retriever and evaluated "
+        f"{len(cases)} questions (top-k={args.k})."
+    )
     print("\nAggregate metrics:")
     print(summary_df.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
     print("\nPer-question results:")
     print(
         results_df[
-            ["case_id", "category", "hit_at_k", "precision_at_k", "recall_at_k", "reciprocal_rank", "retrieved_chunk_ids"]
+            [
+                "case_id",
+                "category",
+                "hit_at_k",
+                "precision_at_k",
+                "recall_at_k",
+                "reciprocal_rank",
+                "retrieved_chunk_ids",
+            ]
         ].to_string(index=False, float_format=lambda value: f"{value:.3f}")
     )
     print(f"\nDetailed results saved to: {results_path}")

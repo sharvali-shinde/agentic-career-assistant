@@ -15,5 +15,6 @@ artifacts/**/*.pkl
 artifacts/**/*.faiss
 
 # Local evaluation outputs
-artifacts/retrieval_eval_results.csv
-artifacts/retrieval_eval_summary.csv
+# Local retrieval evaluation outputs
+artifacts/retrieval_eval*_results.csv
+artifacts/retrieval_eval*_summary.csv
