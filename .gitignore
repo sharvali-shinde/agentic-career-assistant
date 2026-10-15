@@ -3,5 +3,17 @@ __pycache__/
 *.pyc
 .venv/
 *_old.py
+
+# Private source data and evaluation inputs
 data/*
-artifacts/*
+
+# Generated artifacts and personal profile data
+artifacts/*.json
+artifacts/**/*.json
+artifacts/career_vector_store/
+artifacts/**/*.pkl
+artifacts/**/*.faiss
+
+# Local evaluation outputs
+artifacts/retrieval_eval_results.csv
+artifacts/retrieval_eval_summary.csv
